@@ -38,16 +38,31 @@ This project uses GitHub Actions for automated builds and releases. When a new v
 ### Creating a Release
 
 ```bash
-# Update version in gradle.properties if needed
-# Update CHANGELOG.md
-
+# 1. Update version in gradle.properties if needed
+# 2. Update CHANGELOG.md
+# 3. Commit changes
 git add -A
 git commit -m "Release v1.2.3"
+
+# 4. Create and push tag (triggers GitHub Action)
 git tag v1.2.3
-git push origin main --tags
+git push origin development --tags
 ```
 
-The GitHub Action will automatically build and create the release.
+The GitHub Action will:
+1. Build the release APK
+2. Sign it with the keystore
+3. Run unit tests
+4. Create a GitHub Release
+5. Attach the signed APK
+
+### Manual Build
+
+```bash
+./gradlew assembleRelease
+```
+
+The APK will be at `app/build/outputs/apk/release/app-release.apk`.
 
 ### Manual Build
 

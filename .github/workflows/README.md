@@ -51,16 +51,19 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `KEY_PASSWORD` | Key password | `your_key_password` |
 
 #### 4. Create a Release
+
 ```bash
+# Create and push tag (triggers GitHub Action)
 git tag v1.0.0
-git push origin v1.0.0
+git push origin development --tags
 ```
 
 The workflow will automatically:
 1. Build the release APK
 2. Sign it with your keystore
-3. Create a GitHub Release
-4. Attach the APK
+3. Run unit tests
+4. Create a GitHub Release
+5. Attach the APK
 
 ### Workflow Steps
 
