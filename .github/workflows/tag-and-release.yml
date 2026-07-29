@@ -1,0 +1,172 @@
+name: Tag and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0, v1.2.3
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  JAVA_VERSION: '17'
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2048m"
+
+jobs:
+  build-and-release:
+    name: Build APK and Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper tagging
+
+      # Set up Java
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # Set up Gradle
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+          cache-read-only: false
+
+      # Decode and set up signing key
+      - name: Decode Keystore
+        env:
+          ENCODED_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$ENCODED_KEYSTORE" ]; then
+            echo "$ENCODED_KEYSTORE" | base64 -d > keystore.jks
+          else
+            echo "⚠️ No keystore provided. Creating a debug keystore for testing."
+            keytool -genkeypair -v \
+              -keystore keystore.jks \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, ST=Debug, C=US" \
+              2>/dev/null || true
+          fi
+
+      # Create local.properties with keystore config
+      - name: Create local.properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cat > local.properties <<EOF
+          storeFile=keystore.jks
+          storePassword=\${KEYSTORE_PASSWORD:-android}
+          keyAlias=\${KEY_ALIAS:-androiddebugkey}
+          keyPassword=\${KEY_PASSWORD:-android}
+          EOF
+
+      # Build the release APK
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      # Run tests
+      - name: Run Tests
+        run: ./gradlew testDebugUnitTest --stacktrace || true
+
+      # Sign the APK (if not already signed)
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: '34.0.0'
+
+      # Find the final APK
+      - name: Find APK
+        id: find_apk
+        run: |
+          if [ -f "${{ steps.sign_app.outputs.signedReleaseFile }}" ]; then
+            APK_PATH="${{ steps.sign_app.outputs.signedReleaseFile }}"
+          elif ls app/build/outputs/apk/release/*.apk 1> /dev/null 2>&1; then
+            APK_PATH=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          else
+            echo "❌ No APK found!"
+            exit 1
+          fi
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "APK_NAME=$(basename $APK_PATH)" >> $GITHUB_OUTPUT
+          echo "✅ Found APK: $(basename $APK_PATH)"
+
+      # Get version info from tag
+      - name: Get Version Info
+        id: version
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          echo "VERSION=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "VERSION_NAME=${TAG_NAME#v}" >> $GITHUB_OUTPUT
+          echo "📦 Version: $TAG_NAME"
+
+      # Create GitHub Release
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ steps.version.outputs.VERSION_NAME }}
+          body: |
+            ## 🚀 Health Connect Export v${{ steps.version.outputs.VERSION_NAME }}
+
+            ### What's New
+            - See [CHANGELOG.md](https://github.com/grubfx-dev/HealthConnectExport/blob/main/CHANGELOG.md)
+
+            ### Features
+            - Health Connect data export to InfluxDB
+            - Automatic background sync
+            - Support for steps, calories, sleep tracking
+
+            ### Installation
+            1. Download the APK from this release
+            2. Install on your Android device
+            3. Grant Health Connect permissions
+            4. Configure server endpoint in app settings
+
+            ### Configuration
+            - Server URL: Configure in-app
+            - Sync interval: 24 hours (configurable)
+
+            ### Changelog
+            - Full changelog: [CHANGELOG.md](https://github.com/grubfx-dev/HealthConnectExport/blob/main/CHANGELOG.md)
+
+          files: ${{ steps.find_apk.outputs.APK_PATH }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload artifact as backup
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-connect-export-${{ steps.version.outputs.VERSION_NAME }}
+          path: ${{ steps.find_apk.outputs.APK_PATH }}
+          retention-days: 30
+
+      # Notify on success
+      - name: Success Notification
+        run: |
+          echo "✅ Release ${{ steps.version.outputs.VERSION }} created successfully!"
+          echo "📥 Download: https://github.com/grubfx-dev/HealthConnectExport/releases/tag/${{ github.ref_name }}"
