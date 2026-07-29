@@ -1,16 +1,17 @@
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.jetbrainsKotlinAndroid)
+    alias(libs.plugins.compose.compiler)
 }
 
 android {
     namespace = "dev.grubfx.healthconnect"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "$namespace.export"
         minSdk = 33
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "0.0.1"
 
@@ -47,7 +48,7 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
-    buildToolsVersion = "35.0.0"
+    buildToolsVersion = "36.0.0"
     dependenciesInfo {
         includeInApk = true
         includeInBundle = true

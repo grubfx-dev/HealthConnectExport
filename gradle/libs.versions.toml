@@ -1,9 +1,9 @@
 [versions]
-agp = "8.5.2"
+agp = "8.8.0"
 connectClient = "1.1.0-alpha08"
 datastorePreferences = "1.1.1"
 gson = "2.11.0"
-kotlin = "1.9.0"
+kotlin = "2.0.21"
 coreKtx = "1.13.1"
 junit = "4.13.2"
 junitVersion = "1.2.1"
@@ -44,4 +44,4 @@ ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktorCli
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
 jetbrainsKotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

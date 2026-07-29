@@ -176,6 +176,7 @@ fun RunDataExportButton() {
     val workManager = WorkManager.getInstance(context)
 
     Button(onClick = {
+        Log.d("MainActivity", "Enqueuing DataExport work")
         workManager.enqueueUniqueWork(
             WORK_NAME_ONCE,
             androidx.work.ExistingWorkPolicy.REPLACE,
