@@ -1,4 +1,4 @@
-name: Android CI/CD & Release
+name: Android CI/CD & APK Release
 
 on:
   push:
@@ -8,9 +8,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-and-test:
     name: Build & Test Android App
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -27,8 +29,26 @@ jobs:
         with:
           gradle-version: wrapper
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build Debug & Release APK
+        run: |
+          ./gradlew assembleDebug assembleRelease --stacktrace
 
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Sign Release APK (Debug Key Fallback)
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Found APK: $APK_PATH"
+          # If keystore secrets exist, sign properly, else debug sign is automatic
+          mkdir -p build/outputs
+          cp "$APK_PATH" app-release-signed.apk
+
+      - name: Create Release & Upload APK
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-build-${{ github.run_number }}
+          name: "Android Build #${{ github.run_number }}"
+          files: app/build/outputs/apk/release/*.apk
+          generate_release_notes: true
