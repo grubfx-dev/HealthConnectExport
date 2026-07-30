@@ -1,54 +1,81 @@
-name: Android CI/CD & APK Release
+name: Version and Build
 
 on:
   push:
-    branches: [ development, main ]
+    branches:
+      - main
+      - development
   pull_request:
-    branches: [ development, main ]
-  workflow_dispatch:
+    types: [ opened, synchronize ]
 
 jobs:
-  build-and-test:
-    name: Build & Test Android App
+  version-and-build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: 17
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Conventional Version Update
+        id: version
+        uses: paulhatch/semantic-version@v5.4.0
         with:
-          gradle-version: wrapper
+          tag_prefix: ""
+          major_pattern: "BREAKING CHANGE:"
+          minor_pattern: "feat:"
+          patch_pattern: "fix:"
+          version_format: "${major}.${minor}.${patch}"
+          bump_each_commit: false
 
-      - name: Build Debug & Release APK
+      - name: Update Version in build.gradle.kts
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
         run: |
-          ./gradlew assembleDebug assembleRelease --stacktrace
+          # Fallback or direct replacement in app/build.gradle.kts or gradle.properties
+          if grep -q "versionName" app/build.gradle.kts; then
+            sed -i "s/versionName = \".*\"/versionName = \"${{ steps.version.outputs.version_tag }}\"/g" app/build.gradle.kts
+          elif grep -q "versionName" gradle.properties; then
+            sed -i "s/versionName=.*/versionName=${{ steps.version.outputs.version_tag }}/g" gradle.properties
+          fi
+          echo "Updated version to ${{ steps.version.outputs.version_tag }}"
 
-      - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --stacktrace
-
-      - name: Sign Release APK (Debug Key Fallback)
+      - name: Commit Version Update
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
         run: |
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "Found APK: $APK_PATH"
-          # If keystore secrets exist, sign properly, else debug sign is automatic
-          mkdir -p build/outputs
-          cp "$APK_PATH" app-release-signed.apk
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add app/build.gradle.kts gradle.properties || true
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version_tag }} [skip ci]" || echo "No changes to commit"
+          git push || echo "Push skipped or not needed"
 
-      - name: Create Release & Upload APK
-        if: github.event_name != 'pull_request'
+      - name: Build APK
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Upload APK as Artifact
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ steps.version.outputs.version_tag }}
+          path: app/build/outputs/apk/release/app-release.apk
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: apk-build-${{ github.run_number }}
-          name: "Android Build #${{ github.run_number }}"
-          files: app/build/outputs/apk/release/*.apk
-          generate_release_notes: true
+          tag_name: ${{ steps.version.outputs.version_tag }}
+          name: Release ${{ steps.version.outputs.version_tag }}
+          prerelease: ${{ github.ref == 'refs/heads/development' }}
+          files: app/build/outputs/apk/release/app-release.apk
+          token: ${{ secrets.GITHUB_TOKEN }}
