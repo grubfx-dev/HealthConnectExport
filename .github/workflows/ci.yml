@@ -35,7 +35,6 @@ jobs:
           tag_prefix: ""
           major_pattern: "BREAKING CHANGE:"
           minor_pattern: "feat:"
-          patch_pattern: "fix:"
           version_format: "${major}.${minor}.${patch}"
           bump_each_commit: false
 
