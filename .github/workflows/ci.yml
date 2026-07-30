@@ -1,24 +1,23 @@
-name: Version and Build
+name: Android Release
 
 on:
   push:
     branches:
       - main
       - development
-  pull_request:
-    types: [ opened, synchronize ]
+  workflow_dispatch:
 
 jobs:
-  version-and-build:
+  build-and-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -29,7 +28,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Conventional Version Update
+      - name: Calculate Semantic Version
         id: version
         uses: paulhatch/semantic-version@v5.4.0
         with:
@@ -40,42 +39,21 @@ jobs:
           version_format: "${major}.${minor}.${patch}"
           bump_each_commit: false
 
-      - name: Update Version in build.gradle.kts
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
-        run: |
-          # Fallback or direct replacement in app/build.gradle.kts or gradle.properties
-          if grep -q "versionName" app/build.gradle.kts; then
-            sed -i "s/versionName = \".*\"/versionName = \"${{ steps.version.outputs.version_tag }}\"/g" app/build.gradle.kts
-          elif grep -q "versionName" gradle.properties; then
-            sed -i "s/versionName=.*/versionName=${{ steps.version.outputs.version_tag }}/g" gradle.properties
-          fi
-          echo "Updated version to ${{ steps.version.outputs.version_tag }}"
-
-      - name: Commit Version Update
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add app/build.gradle.kts gradle.properties || true
-          git commit -m "chore: bump version to ${{ steps.version.outputs.version_tag }} [skip ci]" || echo "No changes to commit"
-          git push || echo "Push skipped or not needed"
-
-      - name: Build APK
+      - name: Build Release APK
         run: ./gradlew --no-daemon assembleRelease
 
       - name: Upload APK as Artifact
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
         uses: actions/upload-artifact@v4
         with:
           name: app-release-${{ steps.version.outputs.version_tag }}
           path: app/build/outputs/apk/release/app-release.apk
 
       - name: Create GitHub Release
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/development')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version_tag }}
-          name: Release ${{ steps.version.outputs.version_tag }}
+          tag_name: v${{ steps.version.outputs.version_tag }}
+          name: Release v${{ steps.version.outputs.version_tag }}
           prerelease: ${{ github.ref == 'refs/heads/development' }}
           files: app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true
           token: ${{ secrets.GITHUB_TOKEN }}
