@@ -1,17 +1,16 @@
 plugins {
     alias(libs.plugins.androidApplication)
-    alias(libs.plugins.jetbrainsKotlinAndroid)
     alias(libs.plugins.compose.compiler)
 }
 
 android {
     namespace = "dev.grubfx.healthconnect"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "$namespace.export"
         minSdk = 33
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "0.0.1"
 
@@ -34,21 +33,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
-    }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.1"
     }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
-    buildToolsVersion = "36.0.0"
     dependenciesInfo {
         includeInApk = true
         includeInBundle = true
@@ -70,6 +62,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.material.icons.core)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.android)
     testImplementation(libs.junit)
