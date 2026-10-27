@@ -20,6 +20,21 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // Credentials come from environment variables so they never land in
+            // the repository. Locally they can be set in ~/.gradle/gradle.properties
+            // or exported in the shell. In CI they are injected as secrets.
+            val storePath = providers.environmentVariable("HECEXP_KEYSTORE_PATH").orNull
+            if (storePath != null && file(storePath).exists()) {
+                storeFile = file(storePath)
+                storePassword = providers.environmentVariable("HECEXP_KEYSTORE_PASSWORD").orNull
+                keyAlias = providers.environmentVariable("HECEXP_KEY_ALIAS").orNull
+                keyPassword = providers.environmentVariable("HECEXP_KEY_PASSWORD").orNull
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -27,6 +42,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Only sign when a keystore is actually available, so unsigned
+            // local builds still work.
+            signingConfig = if (providers.environmentVariable("HECEXP_KEYSTORE_PATH").isPresent) {
+                signingConfigs.getByName("release")
+            } else {
+                null
+            }
         }
     }
     compileOptions {

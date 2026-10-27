@@ -1,8 +1,10 @@
-[![wakatime](https://wakatime.com/badge/github/angeloanan/HealthConnectExports.svg)](https://wakatime.com/badge/github/angeloanan/HealthConnectExports)
-
 # Health Connect Exports
 
 Export and own your personal health data
+
+> Fork of [angeloanan/HealthConnectExports](https://github.com/angeloanan/HealthConnectExports),
+> developed further as part of the HeCoExp stack. See the
+> [HeCoExp main repository](https://github.com/grubfx-dev/hecoexp) for the full picture.
 
 <div style='width:300px'>
 

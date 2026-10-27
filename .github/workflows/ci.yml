@@ -38,7 +38,17 @@ jobs:
           version_format: "${major}.${minor}.${patch}"
           bump_each_commit: false
 
+      - name: Decode release keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "Keystore written to $RUNNER_TEMP/release.jks"
+
       - name: Build Release APK
+        env:
+          HECEXP_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          HECEXP_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          HECEXP_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          HECEXP_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: ./gradlew --no-daemon assembleRelease
 
       - name: Upload APK as Artifact
