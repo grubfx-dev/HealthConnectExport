@@ -13,17 +13,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Background sync via WorkManager (24-hour interval)
 - InfluxDB 3 integration for data storage
 - Incremental sync with last timestamp tracking
+- `ACCESS_LOCAL_NETWORK` runtime permission button (required from Android 17 / API 37)
 
 ### Changed
-- Updated to Gradle 9.6.1
-- Updated to AGP 8.8.0
-- Updated to Kotlin 2.0.21
-- compileSdk 36
+- Updated to AGP 9.4.1 (from 8.8.0)
+- Updated to Gradle 9.6.1 (from 8.12.1)
+- Updated to Kotlin 2.2.10 (from 2.0.21)
+- Updated to AGP's built-in Kotlin support; the `org.jetbrains.kotlin.android` plugin is no longer applied
+- Updated to Compose BOM 2026.09.00 / Compose 1.12.1
+- Updated to Health Connect 1.1.0 (from 1.1.0-alpha08)
+- Updated to Ktor 3.6.0 (from 2.3.12)
+- Updated to WorkManager 2.12.0, Lifecycle 2.11.0, DataStore 1.3.0, activity-compose 1.13.0
+- Updated to Gson 2.15.0, kotlinx-coroutines-guava 1.11.0, androidx.test.ext:junit 1.3.0, Espresso 3.7.0
+- compileSdk 37 (from 36)
+- targetSdk 37 (from 36)
+- CI now runs on Java 21 to match the Gradle daemon JVM criteria
+
+### Removed
+- `buildToolsVersion` property (removed in AGP 9)
+- `kotlinOptions` block (replaced by `compileOptions.targetCompatibility`)
+- `composeOptions.kotlinCompilerExtensionVersion` (obsolete since Kotlin 2.0)
 
 ### Fixed
 - Cleartext HTTP for local development
 - Network security configuration
 - Permission bypass for testing
+- `material-icons-core` is now declared explicitly, as Material3 1.4.0 no longer depends on it
+- Local network permission button now hides itself once the permission has been granted
 
 ## [1.0.0] - 2026-07-29
 

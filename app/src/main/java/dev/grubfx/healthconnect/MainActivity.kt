@@ -1,11 +1,16 @@
 package dev.grubfx.healthconnect
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,8 +30,10 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -96,6 +103,7 @@ class MainActivity : ComponentActivity() {
                                 RequestPermissionButton()
                                 RequestHealthConnectPermissionButton()
                             }
+                            RequestLocalNetworkPermissionButton()
                             ExportDestinationInputField()
                             Row {
                                 RunDataExportButton()
@@ -210,6 +218,48 @@ fun RequestPermissionButton() {
         },
     ) {
         Text(text = "Notification Permission")
+    }
+}
+
+/**
+ * Apps targeting Android 17 (API 37) are blocked from local network access by default.
+ * The export server is typically reached over the LAN, so the permission has to be granted at runtime.
+ */
+@Composable
+fun RequestLocalNetworkPermissionButton() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+        RequestLocalNetworkPermissionButtonContent()
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
+@Composable
+private fun RequestLocalNetworkPermissionButtonContent() {
+    val context = LocalContext.current
+    var isPermissionGranted by remember {
+        mutableStateOf(
+            ActivityCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_LOCAL_NETWORK
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        Log.d("MainActivity", "ACCESS_LOCAL_NETWORK granted: $granted")
+        isPermissionGranted = granted
+    }
+
+    if (!isPermissionGranted) {
+        Button(
+            onClick = {
+                Log.d("MainActivity", "RequestLocalNetworkPermissionButton is Pressed")
+                permissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+            },
+        ) {
+            Text(text = "Local Network Permission")
+        }
     }
 }
 
