@@ -3,6 +3,11 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+// The release workflow exports the computed semantic version so the APK
+// reports the same version as its GitHub release.
+val semanticVersion: String =
+    providers.environmentVariable("HECEXP_VERSION").orElse("0.0.1").get()
+
 android {
     namespace = "dev.grubfx.healthconnect"
     compileSdk = 37
@@ -12,7 +17,7 @@ android {
         minSdk = 33
         targetSdk = 37
         versionCode = 1
-        versionName = "0.0.1"
+        versionName = semanticVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

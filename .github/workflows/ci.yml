@@ -32,7 +32,7 @@ jobs:
         id: version
         uses: paulhatch/semantic-version@v5.4.0
         with:
-          tag_prefix: "v"
+          tag_prefix: ""
           major_pattern: "/!:|BREAKING CHANGE:/"
           minor_pattern: "/feat(\\(.+\\))?:/"
           version_format: "${major}.${minor}.${patch}"
@@ -45,6 +45,7 @@ jobs:
 
       - name: Build Release APK
         env:
+          HECEXP_VERSION: ${{ steps.version.outputs.version }}
           HECEXP_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
           HECEXP_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           HECEXP_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
@@ -60,8 +61,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version_tag }}
-          name: Release v${{ steps.version.outputs.version_tag }}
+          tag_name: ${{ steps.version.outputs.version_tag }}
+          name: Release ${{ steps.version.outputs.version_tag }}
           prerelease: ${{ github.ref == 'refs/heads/development' }}
           files: app/build/outputs/apk/release/app-release.apk
           generate_release_notes: true
