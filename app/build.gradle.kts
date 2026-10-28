@@ -126,3 +126,56 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 }
+
+/**
+ * The sources of the Health Connect SDK.
+ *
+ * The SDK does not ship a schema file, but its sources declare every record
+ * type with its aggregate metrics, the name of the field they aggregate and
+ * the unit they are converted to. The generator reads those declarations, so
+ * the metric registry of the app is always in step with the SDK.
+ */
+val healthConnectSources: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
+dependencies {
+    healthConnectSources(libs.androidx.connect.client) {
+        artifact {
+            name = "connect-client"
+            type = "java-source"
+            classifier = "sources"
+            extension = "jar"
+        }
+    }
+}
+
+/**
+ * Writes the metric registry of the app from the Health Connect SDK.
+ *
+ * Run it with:
+ *
+ *     ./gradlew generateMetrics
+ *
+ * The registry is checked in, so the build does not depend on the task.
+ * Run it again after the version of the SDK in the version catalog changes.
+ */
+val generateMetrics by tasks.registering {
+    val outputFile = layout.projectDirectory
+        .file("src/main/java/dev/grubfx/healthconnect/HealthMetrics.kt")
+    val sources = healthConnectSources
+
+    inputs.files(sources)
+    outputs.file(outputFile)
+
+    doLast {
+        val sourcesJar = sources.files.single { it.name.endsWith("-sources.jar") }
+        val registry = dev.grubfx.healthconnect.build.HealthMetricsGenerator.generate(sourcesJar)
+        outputFile.asFile.writeText(registry)
+
+        logger.lifecycle(
+            "Wrote ${outputFile.asFile.name} from ${sourcesJar.name}.",
+        )
+    }
+}

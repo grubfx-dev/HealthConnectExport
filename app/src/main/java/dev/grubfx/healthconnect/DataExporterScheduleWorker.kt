@@ -12,6 +12,7 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.*
 import androidx.health.connect.client.request.AggregateRequest
+import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -36,39 +37,14 @@ val httpClient = HttpClient(Android)
 val LAST_SYNC_TIMESTAMP = longPreferencesKey("last_sync_timestamp")
 
 // a set of all readable permissions
-val readonlyHealthConnectPermissions = setOf(
-    HealthPermission.getReadPermission(ActiveCaloriesBurnedRecord::class),
-    HealthPermission.getReadPermission(BasalBodyTemperatureRecord::class),
-    HealthPermission.getReadPermission(BasalMetabolicRateRecord::class),
-    HealthPermission.getReadPermission(BloodGlucoseRecord::class),
-    HealthPermission.getReadPermission(BloodPressureRecord::class),
-    HealthPermission.getReadPermission(BodyFatRecord::class),
-    HealthPermission.getReadPermission(BodyTemperatureRecord::class),
-    HealthPermission.getReadPermission(BoneMassRecord::class),
-    HealthPermission.getReadPermission(CervicalMucusRecord::class),
-    HealthPermission.getReadPermission(DistanceRecord::class),
-    HealthPermission.getReadPermission(ElevationGainedRecord::class),
-    HealthPermission.getReadPermission(ExerciseSessionRecord::class),
-    HealthPermission.getReadPermission(FloorsClimbedRecord::class),
-    HealthPermission.getReadPermission(HeartRateRecord::class),
-    HealthPermission.getReadPermission(HeightRecord::class),
-    HealthPermission.getReadPermission(HydrationRecord::class),
-    HealthPermission.getReadPermission(MenstruationFlowRecord::class),
-    HealthPermission.getReadPermission(NutritionRecord::class),
-    HealthPermission.getReadPermission(OvulationTestRecord::class),
-    HealthPermission.getReadPermission(OxygenSaturationRecord::class),
-    HealthPermission.getReadPermission(PowerRecord::class),
-    HealthPermission.getReadPermission(RespiratoryRateRecord::class),
-    HealthPermission.getReadPermission(RestingHeartRateRecord::class),
-    HealthPermission.getReadPermission(SexualActivityRecord::class),
-    HealthPermission.getReadPermission(SleepSessionRecord::class),
-    HealthPermission.getReadPermission(SpeedRecord::class),
-    HealthPermission.getReadPermission(StepsRecord::class),
-    HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
-    HealthPermission.getReadPermission(Vo2MaxRecord::class),
-    HealthPermission.getReadPermission(WeightRecord::class),
-    HealthPermission.getReadPermission(WheelchairPushesRecord::class)
-)
+//
+// The list of the record classes comes from the generated registry, so a
+// record type that the app reads also has its permission asked for. A
+// permission that is missing in the manifest makes the read of that type
+// fail, which is why the two lists are kept in one place.
+val readonlyHealthConnectPermissions = readRecordClasses.map { recordClass ->
+    HealthPermission.getReadPermission(recordClass)
+}.toSet()
 
 class DataExporterScheduleWorker(
     appContext: Context, workerParams: WorkerParameters
@@ -234,6 +210,17 @@ class DataExporterScheduleWorker(
      * a partial day and a second sync would overwrite the first one with an
      * even smaller slice. Aggregating the full day makes the value a running
      * total, and the server upserts it per date.
+     *
+     * Every metric that Health Connect can aggregate is requested in a
+     * single call. The API has a daily limit on the number of calls, and the
+     * limit in the background is stricter than the one in the foreground, so
+     * one call for all metrics is the only way to stay inside the quota
+     * while the worker walks the days of the history.
+     *
+     * The record types that Health Connect cannot aggregate are read as raw
+     * records. They are one call per type, because the API reads a single
+     * type per call. A type that has no record in the day is not read at
+     * all, which keeps the number of calls low.
      */
     private suspend fun buildPayload(day: LocalDate, now: Long): String {
         val zone = ZoneId.systemDefault()
@@ -254,18 +241,50 @@ class DataExporterScheduleWorker(
 
         val healthDataAggregate = healthConnect.aggregate(
             AggregateRequest(
-                metrics = setOf(
-                    StepsRecord.COUNT_TOTAL,
-                    ActiveCaloriesBurnedRecord.ACTIVE_CALORIES_TOTAL,
-                    TotalCaloriesBurnedRecord.ENERGY_TOTAL,
-                    SleepSessionRecord.SLEEP_DURATION_TOTAL,
-                ),
+                metrics = aggregateRecordSpecs.flatMap { spec -> spec.metrics }.map { it.metric }
+                    .toSet(),
                 timeRangeFilter = timeRangeFilter,
             )
         )
         Log.d("DataExporterWorker", "Raw data: ${Gson().toJson(healthDataAggregate)}")
 
-        // build a JSON file from the aggregate data
+        // Every record type becomes one entry with the aggregated values as
+        // its fields. The daily summary keeps the four totals the server
+        // knows about, so both payload shapes stay in use.
+        val metrics = aggregateRecordSpecs.mapNotNull { spec ->
+            val values = spec.metrics
+                .mapNotNull { metricSpec ->
+                    val result = healthDataAggregate[metricSpec.metric] ?: return@mapNotNull null
+                    val value = metricSpec.read(result)
+                    // A metric that is not available produces a zero, which
+                    // would be a value the user never measured. The field is
+                    // left out instead, so the database shows what was
+                    // actually recorded.
+                    if (value == 0.0) null else metricSpec.name to value
+                }
+                .toMap()
+
+            if (values.isEmpty()) {
+                null
+            } else {
+                mapOf(
+                    "metric" to spec.type,
+                    "record_id" to day.toString(),
+                    "time" to startOfDay,
+                    "values" to values,
+                )
+            }
+        }
+        Log.d("DataExporterWorker", "Metrics: ${Gson().toJson(metrics)}")
+
+        // The record types without an aggregate are read as raw records. Each
+        // of them becomes an entry of its own, so a day with several
+        // measurements keeps all of them.
+        val rawMetrics = readRawMetrics(day, timeRangeFilter)
+        Log.d("DataExporterWorker", "Raw metrics: ${Gson().toJson(rawMetrics)}")
+
+        // The daily summary keeps the totals the server writes to its own
+        // measurement, so the existing dashboard data stays the same.
         val jsonValues = HashMap<String, Number>()
         jsonValues["steps"] = healthDataAggregate[StepsRecord.COUNT_TOTAL] ?: 0
         jsonValues["active_calories"] =
@@ -275,7 +294,6 @@ class DataExporterScheduleWorker(
             healthDataAggregate[TotalCaloriesBurnedRecord.ENERGY_TOTAL]?.inKilocalories ?: 0
         jsonValues["sleep_duration_seconds"] =
             healthDataAggregate[SleepSessionRecord.SLEEP_DURATION_TOTAL]?.seconds ?: 0
-        //TODO add the rest of the newly added fields for export
 
         return Gson().toJson(mapOf(
             // Identifies the phone the data came from. The model alone is
@@ -289,7 +307,112 @@ class DataExporterScheduleWorker(
             // derive the date from `time` in UTC, which is the wrong day for
             // most timezones.
             "date" to day.toString(),
-            "data" to jsonValues
+            "data" to jsonValues,
+            // The aggregated values of every record type that supports
+            // aggregation. The server writes them into one measurement per
+            // record type.
+            "metrics" to metrics + rawMetrics,
         ))
+    }
+
+    /**
+     * Reads the record types that Health Connect cannot aggregate.
+     *
+     * The API reads a single type per call, so every type costs one call.
+     * The types that have no record in the day are skipped, because a type
+     * without a record would cost a call for nothing.
+     *
+     * The records of a type are read page by page. The API answers with a
+     * token while there are more records, and the token is empty string
+     * instead of null on some versions of Health Connect, so it is checked
+     * with isNullOrEmpty.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun readRawMetrics(
+        day: LocalDate,
+        timeRangeFilter: TimeRangeFilter,
+    ): List<Map<String, Any>> {
+        val entries = mutableListOf<Map<String, Any>>()
+
+        for (spec in rawRecordSpecs) {
+            try {
+                var pageToken: String? = null
+                do {
+                    val response = healthConnect.readRecords(
+                        ReadRecordsRequest(
+                            recordType = spec.recordClass as kotlin.reflect.KClass<Record>,
+                            timeRangeFilter = timeRangeFilter,
+                            pageToken = pageToken,
+                        )
+                    )
+                    pageToken = response.pageToken
+                    Log.d(
+                        "DataExporterWorker",
+                        "Read ${response.records.size} record(s) of ${spec.type}",
+                    )
+
+                    for (record in response.records) {
+                        val values = spec.fields
+                            .mapNotNull { field ->
+                                val value = field.read(fieldValue(record, field))
+                                if (value == 0.0) null else field.name to value
+                            }
+                            .toMap()
+
+                        if (values.isNotEmpty()) {
+                            // The time of the record is the identity of the
+                            // measurement. A type with several records in a
+                            // day would overwrite itself otherwise.
+                            val time = recordTime(record)
+                            entries.add(
+                                mapOf(
+                                    "metric" to spec.type,
+                                    "record_id" to "${spec.type}-$time",
+                                    "time" to time,
+                                    "values" to values,
+                                ),
+                            )
+                        }
+                    }
+                } while (!pageToken.isNullOrEmpty())
+            } catch (e: SecurityException) {
+                // The permission for this type was not granted. The rest of
+                // the export is not affected by it.
+                Log.w("DataExporterWorker", "No permission for ${spec.type}: ${e.message}")
+            } catch (e: Exception) {
+                // A type that fails to read does not fail the whole export.
+                // The other types still hold their values.
+                Log.e("DataExporterWorker", "Failed to read ${spec.type}", e)
+            }
+        }
+
+        return entries
+    }
+
+    /**
+     * Reads the value of a field out of a record.
+     *
+     * The registry names the fields of a type, but the records are read as
+     * the base type, so the value is looked up by its name. The name of the
+     * property in the record is not the name the field is written to, so the
+     * registry keeps both.
+     */
+    private fun fieldValue(record: Record, field: RawFieldSpec): Any? =
+        record.javaClass.methods
+            .firstOrNull { it.name == "get${field.property.replaceFirstChar { it.uppercase() }}" }
+            ?.invoke(record)
+
+    /**
+     * Reads the time of a record in milliseconds since the epoch.
+     *
+     * The base type of the records has no time, the property is declared by
+     * the concrete type. A record without a time falls back to the start of
+     * the day, so the entry still has a position in the series.
+     */
+    private fun recordTime(record: Record): Long {
+        val time = record.javaClass.methods
+            .firstOrNull { it.name == "getTime" }
+            ?.invoke(record) as? Instant
+        return time?.toEpochMilli() ?: 0L
     }
 }
