@@ -360,14 +360,18 @@ class DataExporterScheduleWorker(
                             .toMap()
 
                         if (values.isNotEmpty()) {
-                            // The time of the record is the identity of the
-                            // measurement. A type with several records in a
-                            // day would overwrite itself otherwise.
+                            // The identity of the record is the id that
+                            // Health Connect assigned to it. The time alone
+                            // is not enough: a type can hold several records
+                            // with the same time, and they would overwrite
+                            // each other in the server, because the server
+                            // uses the record id and the time as the key of
+                            // the measurement.
                             val time = recordTime(record)
                             entries.add(
                                 mapOf(
                                     "metric" to spec.type,
-                                    "record_id" to "${spec.type}-$time",
+                                    "record_id" to recordId(spec.type, record, time),
                                     "time" to time,
                                     "values" to values,
                                 ),
@@ -414,5 +418,19 @@ class DataExporterScheduleWorker(
             .firstOrNull { it.name == "getTime" }
             ?.invoke(record) as? Instant
         return time?.toEpochMilli() ?: 0L
+    }
+
+    /**
+     * Builds the identity of a record for the server.
+     *
+     * Health Connect assigns a unique id to every record when it is written.
+     * That id survives a reinstall of the writing app and is stable for the
+     * lifetime of the record, so it is used as the identity. A record without
+     * an id falls back to the time of the record, which is unique as long as
+     * the type holds no two records with the same time.
+     */
+    private fun recordId(type: String, record: Record, time: Long): String {
+        val id = record.metadata.id
+        return if (id.isNotEmpty()) "$type-$id" else "$type-$time"
     }
 }
