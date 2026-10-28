@@ -164,11 +164,11 @@ fun ExportDestinationInputField() {
         context.dataStore.edit { it[EXPORT_DESTINATION_URI] = fieldValue }
     }
 
+    // The full URL including the scheme, so that https:// can be used too.
     TextField(enabled = fieldValue != null,
-        placeholder = { Text("Export destination URI") },
+        placeholder = { Text("http://host:3001/api/ingest") },
         value = fieldValue ?: "Loading...",
         maxLines = 1,
-        prefix = { Text("http://") },
         keyboardOptions = KeyboardOptions(
             KeyboardCapitalization.None,
             autoCorrect = false,
