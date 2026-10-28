@@ -181,3 +181,68 @@ val generateMetrics by tasks.registering {
         )
     }
 }
+
+/**
+ * Checks that the app stays read-only.
+ *
+ * The exporter reads the health data of the user and sends it to a server.
+ * It never writes into Health Connect, because a writer could change the
+ * data of the user, and the data of the user is not the business of an
+ * exporter.
+ *
+ * The check looks for the write permissions of Health Connect in the manifest
+ * and for the write calls of the SDK in the sources of the app. It fails the
+ * build when it finds one of them, so the read-only property cannot be lost
+ * by accident.
+ */
+val checkReadOnly by tasks.registering {
+    val manifest = layout.projectDirectory.file("src/main/AndroidManifest.xml")
+    val sources = layout.projectDirectory.dir("src/main/java")
+
+    inputs.file(manifest)
+    inputs.dir(sources)
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val problems = mutableListOf<String>()
+
+        val manifestText = manifest.asFile.readText()
+        manifestText.lineSequence()
+            .filter { it.contains("android.permission.health.WRITE_") }
+            .forEach { problems.add("The manifest asks for a write permission: ${it.trim()}") }
+
+        sources.asFile.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .forEach { file ->
+                file.readLines().forEachIndexed { index, line ->
+                    val call = WRITE_CALLS.find { line.contains(it) }
+                    if (call != null) {
+                        problems.add(
+                            "${file.name}:${index + 1} calls '$call': ${line.trim()}",
+                        )
+                    }
+                }
+            }
+
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                "The app has to stay read-only, but the build found:\n" +
+                    problems.joinToString("\n") { "  $it" },
+            )
+        }
+
+        logger.lifecycle("The app is read-only.")
+    }
+}
+
+/** The calls of the SDK that write into Health Connect. */
+val WRITE_CALLS = listOf(
+    "insertRecords",
+    "writeRecords",
+    "deleteRecords",
+    "updateRecords",
+)
+
+tasks.named("check") {
+    dependsOn(checkReadOnly)
+}

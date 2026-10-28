@@ -43,6 +43,9 @@ jobs:
           echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/release.jks"
           echo "Keystore written to $RUNNER_TEMP/release.jks"
 
+      - name: Check that the app stays read-only
+        run: ./gradlew --no-daemon checkReadOnly
+
       - name: Build Release APK
         env:
           HECEXP_VERSION: ${{ steps.version.outputs.version }}
