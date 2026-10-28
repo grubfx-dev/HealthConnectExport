@@ -171,7 +171,8 @@ val generateMetrics by tasks.registering {
 
     doLast {
         val sourcesJar = sources.files.single { it.name.endsWith("-sources.jar") }
-        val registry = dev.grubfx.healthconnect.build.HealthMetricsGenerator.generate(sourcesJar)
+        val registry = dev.grubfx.healthconnect.generator.HealthMetricsGenerator
+            .generate(sourcesJar)
         outputFile.asFile.writeText(registry)
 
         logger.lifecycle(
