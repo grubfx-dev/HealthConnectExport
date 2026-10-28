@@ -28,35 +28,12 @@ project after all, but things might change with time.
 
 ## 🚀 Releases
 
-This project uses GitHub Actions for automated builds and releases. When a new version tag is pushed
-(e.g., `v1.0.0`), the following happens automatically:
+Releases are built automatically by GitHub Actions. The version comes from the git tag, the tag format is
+unprefixed (`1.0.0`, not `v1.0.0`), and the same convention is used across the HeCoExp repos. The release
+workflow derives the version from the Conventional Commits since the last tag, builds the APK, signs it with
+the release key and creates the GitHub Release.
 
-1. ✅ Builds the release APK
-2. ✅ Signs with the project keystore
-3. ✅ Runs unit tests
-4. ✅ Creates a GitHub Release
-5. ✅ Attaches the signed APK
-
-### Creating a Release
-
-```bash
-# 1. Update version in gradle.properties if needed
-# 2. Update CHANGELOG.md
-# 3. Commit changes
-git add -A
-git commit -m "Release v1.2.3"
-
-# 4. Create and push tag (triggers GitHub Action)
-git tag v1.2.3
-git push origin development --tags
-```
-
-The GitHub Action will:
-1. Build the release APK
-2. Sign it with the keystore
-3. Run unit tests
-4. Create a GitHub Release
-5. Attach the signed APK
+The version is also injected into the APK, so the installed app reports the same version as its release.
 
 ### Manual Build
 
@@ -64,12 +41,5 @@ The GitHub Action will:
 ./gradlew assembleRelease
 ```
 
-The APK will be at `app/build/outputs/apk/release/app-release.apk`.
-
-### Manual Build
-
-```bash
-./gradlew assembleRelease
-```
-
-The APK will be at `app/build/outputs/apk/release/app-release.apk`.
+The APK will be at `app/build/outputs/apk/release/app-release.apk`. It is unsigned unless the signing
+environment variables are set — see the CI/CD documentation of the main repository.
