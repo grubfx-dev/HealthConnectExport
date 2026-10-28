@@ -8,6 +8,32 @@ plugins {
 val semanticVersion: String =
     providers.environmentVariable("HECEXP_VERSION").orElse("0.0.1").get()
 
+/**
+ * Turns the semantic version into the numeric version code Android uses to
+ * decide whether an update is an upgrade.
+ *
+ * The code is derived from the version instead of being set by hand, so a
+ * release always carries a code that is higher than the one before it.
+ * Without that, the first update after the initial release would be
+ * refused by the system.
+ *
+ * The scheme is major * 10_000 + minor * 100 + patch, with a multiplier of
+ * 100 for each part, so a part can grow by 99 before it reaches the next
+ * one. The result stays inside the 2.1 billion limit Android imposes.
+ */
+fun versionCodeOf(version: String): Int {
+    val parts = version
+        .substringBefore('-')
+        .substringBefore('+')
+        .split('.')
+        .map { it.toIntOrNull() ?: 0 }
+
+    val major = parts.getOrElse(0) { 0 }
+    val minor = parts.getOrElse(1) { 0 }
+    val patch = parts.getOrElse(2) { 0 }
+    return major * 10_000 + minor * 100 + patch
+}
+
 android {
     namespace = "dev.grubfx.healthconnect"
     compileSdk = 37
@@ -16,7 +42,7 @@ android {
         applicationId = "$namespace.export"
         minSdk = 33
         targetSdk = 37
-        versionCode = 1
+        versionCode = versionCodeOf(semanticVersion)
         versionName = semanticVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

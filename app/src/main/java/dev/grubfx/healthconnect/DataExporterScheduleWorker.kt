@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.map
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.edit
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 val httpClient = HttpClient(Android)
 
@@ -138,25 +140,117 @@ class DataExporterScheduleWorker(
         notificationManager.notify(1, foregroundNotification)
 
         val now = System.currentTimeMillis()
-        // The totals are aggregated over the whole local day, not just the
-        // sync window. The window only covers the new records, so its totals
-        // would be a partial day and a second sync would overwrite the first
-        // one with an even smaller slice. Aggregating the full day makes the
-        // value a running total, and the server upserts it per date.
-        val startOfDay = java.util.Calendar.getInstance().apply {
-            timeInMillis = now
-            set(java.util.Calendar.HOUR_OF_DAY, 0)
-            set(java.util.Calendar.MINUTE, 0)
-            set(java.util.Calendar.SECOND, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
-        }.timeInMillis
+        // The last successful sync is the anchor for the history. Every day
+        // from that one until today is read, so a day that was missed while
+        // the phone was off or the app was not installed is still exported.
+        // Without a previous sync there is no history to read, so the export
+        // covers the current day only.
+        val lastSync = prefs[LAST_SYNC_TIMESTAMP]
+        val days = daysToExport(lastSync, now)
+        Log.d(
+            "DataExporterWorker",
+            "Exporting ${days.size} day(s), from ${days.first()} to ${days.last()}"
+        )
+
+        // The destination is stored as a full URL. A bare host:port is
+        // still accepted and gets http:// prepended, because that is what
+        // older versions of the app stored.
+        val url = if (exportDestination.startsWith("http://") ||
+            exportDestination.startsWith("https://")
+        ) {
+            exportDestination
+        } else {
+            "http://$exportDestination"
+        }
+
+        // Every day is sent as its own payload. The server upserts the
+        // summary per date, so a day that is sent twice overwrites itself
+        // instead of ending up twice in the database.
+        for (day in days) {
+            val payload = buildPayload(day, now)
+            Log.d("DataExporterWorker", "Data for $day: $payload")
+
+            try {
+                Log.d("DataExporterWorker", "Exporting data to $url")
+                val response = httpClient.post(url) {
+                    contentType(ContentType.Application.Json)
+                    setBody(payload)
+                }
+
+                // A rejected payload is a server-side problem, not a transport
+                // problem. Retrying it would send the same data again, so the
+                // failure is reported and the sync timestamp is not advanced.
+                if (!response.status.isSuccess()) {
+                    Log.e("DataExporterWorker", "Export rejected with ${response.status}")
+                    notificationManager.cancel(1)
+                    notificationManager.notify(1, createExceptionNotification(
+                        IllegalStateException("Server rejected the payload: ${response.status}")))
+                    return Result.failure()
+                }
+            } catch (e: Exception) {
+                Log.e("DataExporterWorker", "Failed to export data", e)
+
+                notificationManager.cancel(1)
+                notificationManager.notify(1, createExceptionNotification(e))
+                // A transport failure is worth another attempt. Returning retry()
+                // is what makes WorkManager apply the configured backoff.
+                return Result.retry()
+            }
+        }
+
+        // Update last sync timestamp
+        applicationContext.dataStore.edit { it[LAST_SYNC_TIMESTAMP] = now }
+
+        notificationManager.cancel(1)
+        return Result.success()
+    }
+
+    /**
+     * The local days that have to be exported, from the oldest to the newest.
+     *
+     * The list starts at the day of the last successful sync, because the
+     * totals of that day are a running total over the whole day and may have
+     * grown since the last export. It ends with the current day.
+     */
+    private fun daysToExport(lastSync: Long?, now: Long): List<LocalDate> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.ofInstant(Instant.ofEpochMilli(now), zone)
+        val first = if (lastSync == null) {
+            today
+        } else {
+            LocalDate.ofInstant(Instant.ofEpochMilli(lastSync), zone)
+        }
+        return generateSequence(first) { it.plusDays(1) }
+            .takeWhile { !it.isAfter(today) }
+            .toList()
+    }
+
+    /**
+     * Aggregates the totals of a single local day and builds the payload for
+     * it.
+     *
+     * The totals are aggregated over the whole local day, not just the sync
+     * window. The window only covers the new records, so its totals would be
+     * a partial day and a second sync would overwrite the first one with an
+     * even smaller slice. Aggregating the full day makes the value a running
+     * total, and the server upserts it per date.
+     */
+    private suspend fun buildPayload(day: LocalDate, now: Long): String {
+        val zone = ZoneId.systemDefault()
+        val startOfDay = day.atStartOfDay(zone).toInstant().toEpochMilli()
+        // The end of the day is exclusive, so the records at midnight belong
+        // to the next day and are not counted twice.
+        val endOfDay = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        // For the current day the export stops now, there is nothing in the
+        // future to read.
+        val end = minOf(endOfDay, now)
 
         val timeRangeFilter = TimeRangeFilter.Companion.between(
             Instant.ofEpochMilli(startOfDay),
-            Instant.ofEpochMilli(now)
+            Instant.ofEpochMilli(end)
         )
 
-        Log.d("DataExporterWorker", "Fetching health data from $startOfDay to $now")
+        Log.d("DataExporterWorker", "Fetching health data from $startOfDay to $end")
 
         val healthDataAggregate = healthConnect.aggregate(
             AggregateRequest(
@@ -183,7 +277,7 @@ class DataExporterScheduleWorker(
             healthDataAggregate[SleepSessionRecord.SLEEP_DURATION_TOTAL]?.seconds ?: 0
         //TODO add the rest of the newly added fields for export
 
-        val json = Gson().toJson(mapOf(
+        return Gson().toJson(mapOf(
             // Identifies the phone the data came from. The model alone is
             // not unique across identical phones, so the manufacturer is
             // combined with it. The value is stable for the lifetime of the
@@ -194,58 +288,8 @@ class DataExporterScheduleWorker(
             // The local day the totals belong to. The server would otherwise
             // derive the date from `time` in UTC, which is the wrong day for
             // most timezones.
-            "date" to java.time.LocalDate.ofInstant(
-                Instant.ofEpochMilli(now),
-                java.time.ZoneId.systemDefault()
-            ).toString(),
+            "date" to day.toString(),
             "data" to jsonValues
         ))
-        Log.d("DataExporterWorker", "Data: $json")
-
-        try {
-            // The destination is stored as a full URL. A bare host:port is
-            // still accepted and gets http:// prepended, because that is what
-            // older versions of the app stored.
-            val url = if (exportDestination.startsWith("http://") ||
-                exportDestination.startsWith("https://")
-            ) {
-                exportDestination
-            } else {
-                "http://$exportDestination"
-            }
-
-            Log.d("DataExporterWorker", "Exporting data to $url")
-            val response = httpClient.post(url) {
-                contentType(ContentType.Application.Json)
-                setBody(json)
-            }
-
-            // A rejected payload is a server-side problem, not a transport
-            // problem. Retrying it would send the same data again, so the
-            // failure is reported and the sync timestamp is not advanced.
-            if (!response.status.isSuccess()) {
-                Log.e("DataExporterWorker", "Export rejected with ${response.status}")
-                notificationManager.cancel(1)
-                notificationManager.notify(1, createExceptionNotification(
-                    IllegalStateException("Server rejected the payload: ${response.status}")
-                ))
-                return Result.failure()
-            }
-
-            // Update last sync timestamp
-            applicationContext.dataStore.edit { it[LAST_SYNC_TIMESTAMP] = now }
-
-        } catch (e: Exception) {
-            Log.e("DataExporterWorker", "Failed to export data", e)
-
-            notificationManager.cancel(1)
-            notificationManager.notify(1, createExceptionNotification(e))
-            // A transport failure is worth another attempt. Returning retry()
-            // is what makes WorkManager apply the configured backoff.
-            return Result.retry()
-        }
-
-        notificationManager.cancel(1)
-        return Result.success()
     }
 }
