@@ -46,6 +46,9 @@ jobs:
       - name: Check that the app stays read-only
         run: ./gradlew --no-daemon checkReadOnly
 
+      - name: Check that the metric registry matches the SDK
+        run: ./gradlew --no-daemon checkMetricsUpToDate
+
       - name: Build Release APK
         env:
           HECEXP_VERSION: ${{ steps.version.outputs.version }}

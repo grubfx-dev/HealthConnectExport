@@ -183,6 +183,45 @@ val generateMetrics by tasks.registering {
 }
 
 /**
+ * Checks that the metric registry matches the Health Connect SDK.
+ *
+ * The registry is generated from the SDK and checked in, so a new version of
+ * the SDK leaves the registry behind until it is regenerated. The app would
+ * then read fewer types than the SDK offers, and it would ask for the
+ * permissions of the old registry.
+ *
+ * The check generates the registry again and compares it with the checked in
+ * one. It fails the build when the two differ, so a pull request that bumps
+ * the SDK cannot be merged until the registry is regenerated.
+ */
+val checkMetricsUpToDate by tasks.registering {
+    val outputFile = layout.projectDirectory
+        .file("src/main/java/dev/grubfx/healthconnect/HealthMetrics.kt")
+    val sources = healthConnectSources
+
+    inputs.file(outputFile)
+    inputs.files(sources)
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val sourcesJar = sources.files.single { it.name.endsWith("-sources.jar") }
+        val expected = dev.grubfx.healthconnect.generator.HealthMetricsGenerator
+            .generate(sourcesJar)
+        val actual = outputFile.asFile.readText()
+
+        if (actual != expected) {
+            throw GradleException(
+                "The metric registry does not match the Health Connect SDK " +
+                    "${sourcesJar.name}. Run ./gradlew generateMetrics and " +
+                    "commit the result.",
+            )
+        }
+
+        logger.lifecycle("The metric registry matches the Health Connect SDK.")
+    }
+}
+
+/**
  * Checks that the app stays read-only.
  *
  * The exporter reads the health data of the user and sends it to a server.
@@ -245,4 +284,5 @@ val WRITE_CALLS = listOf(
 
 tasks.named("check") {
     dependsOn(checkReadOnly)
+    dependsOn(checkMetricsUpToDate)
 }

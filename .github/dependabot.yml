@@ -1,0 +1,55 @@
+# Dependabot keeps the dependencies of the app up to date.
+#
+# The schedule is weekly, so a new release of a dependency has a few days to
+# settle before it is proposed. The updates are grouped by the part of the
+# app they touch, so a pull request holds one kind of change and stays
+# reviewable.
+#
+# The commit messages are prefixed with "chore", so a dependency update does
+# not produce a release of the app. The release is cut for a change of the
+# app itself.
+
+version: 2
+
+updates:
+  # The libraries of the app, in gradle/libs.versions.toml, and the Gradle
+  # wrapper.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      # The Health Connect SDK is a group of its own, because a new version
+      # of it changes the metric registry. The registry is generated from the
+      # SDK, so the build fails until it is regenerated. See the check
+      # "checkMetricsUpToDate".
+      health-connect:
+        patterns:
+          - "androidx.health.connect:connect-client"
+      android:
+        patterns:
+          - "androidx.*:*"
+          - "com.android.*:*"
+          - "com.google.*:*"
+      kotlin:
+        patterns:
+          - "org.jetbrains.kotlin*:*"
+      rest:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The actions of the pipeline. A new version of an action can change what
+  # the pipeline does, so the change is reviewed like any other change.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(deps)"

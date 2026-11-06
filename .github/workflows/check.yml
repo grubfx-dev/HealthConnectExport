@@ -1,0 +1,41 @@
+name: App Check
+
+# Runs on every pull request and on pushes to the development branch.
+# Pull requests are what Dependabot opens, so this workflow is the one that
+# validates a dependency update before it is merged.
+on:
+  push:
+    branches:
+      - development
+  pull_request:
+    branches:
+      - main
+      - development
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Check App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Check that the app stays read-only
+        run: ./gradlew --no-daemon checkReadOnly
+
+      - name: Check that the metric registry matches the SDK
+        run: ./gradlew --no-daemon checkMetricsUpToDate
+
+      - name: Run lint and unit tests
+        run: ./gradlew --no-daemon check
