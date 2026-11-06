@@ -187,14 +187,18 @@ class DataExporterScheduleWorker(
      * The list starts at the day of the last successful sync, because the
      * totals of that day are a running total over the whole day and may have
      * grown since the last export. It ends with the current day.
+     *
+     * The day is read with `atZone` and not with `LocalDate.ofInstant`,
+     * because `ofInstant` was added in API 34 and the app supports API 33.
+     * Both give the same day, because the zone is the same in both.
      */
     private fun daysToExport(lastSync: Long?, now: Long): List<LocalDate> {
         val zone = ZoneId.systemDefault()
-        val today = LocalDate.ofInstant(Instant.ofEpochMilli(now), zone)
+        val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
         val first = if (lastSync == null) {
             today
         } else {
-            LocalDate.ofInstant(Instant.ofEpochMilli(lastSync), zone)
+            Instant.ofEpochMilli(lastSync).atZone(zone).toLocalDate()
         }
         return generateSequence(first) { it.plusDays(1) }
             .takeWhile { !it.isAfter(today) }
