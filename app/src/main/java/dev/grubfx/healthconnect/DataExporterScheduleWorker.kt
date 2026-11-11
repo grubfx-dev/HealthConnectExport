@@ -18,6 +18,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.google.gson.Gson
 import dev.grubfx.healthconnect.queue.PayloadQueue
+import dev.grubfx.healthconnect.queue.QueuePolicy
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.ktor.client.request.post
@@ -165,10 +166,6 @@ class DataExporterScheduleWorker(
         // covers the current day only.
         val lastSync = prefs[LAST_SYNC_TIMESTAMP]
         val days = daysToExport(lastSync, now)
-        Log.d(
-            "DataExporterWorker",
-            "Exporting ${days.size} day(s), from ${days.first()} to ${days.last()}"
-        )
 
         // The destination is stored as a full URL. A bare host:port is
         // still accepted and gets http:// prepended, because that is what
@@ -193,10 +190,37 @@ class DataExporterScheduleWorker(
             return flushResult
         }
 
+        // A day that the server holds is not read again. Health Connect
+        // returns nothing for a day that is older than its history of
+        // thirty days, and the server would write those empty values over
+        // the ones it already has. The queue holds the marker of every day
+        // the server holds, so the days to read are the ones without one.
+        val pendingDays = queue.pendingDays().toSet()
+        val deliveredDays = queue.deliveredDays().toSet()
+        val today = days.lastOrNull()?.toString()
+        val daysToRead = QueuePolicy.daysToExport(
+            days.map { it.toString() },
+            pendingDays,
+            deliveredDays,
+            today ?: "",
+        ).map { LocalDate.parse(it) }
+        if (daysToRead.isEmpty()) {
+            Log.d(
+                "DataExporterWorker",
+                "Every day of ${days.size} is already at the server, nothing to read"
+            )
+        } else {
+            Log.d(
+                "DataExporterWorker",
+                "Exporting ${daysToRead.size} of ${days.size} day(s), " +
+                    "from ${daysToRead.first()} to ${daysToRead.last()}"
+            )
+        }
+
         // Every day is sent as its own payload. The server upserts the
         // summary per date, so a day that is sent twice overwrites itself
         // instead of ending up twice in the database.
-        for (day in days) {
+        for (day in daysToRead) {
             val payload = buildPayload(day, now)
             Log.d("DataExporterWorker", "Data for $day: $payload")
 
@@ -237,8 +261,22 @@ class DataExporterScheduleWorker(
             }
         }
 
-        // Update last sync timestamp
-        applicationContext.dataStore.edit { it[LAST_SYNC_TIMESTAMP] = now }
+        // The timestamp is the anchor of the history. It is advanced only
+        // when the queue holds no day that the server does not have yet.
+        // Otherwise the days that are still waiting would fall out of the
+        // window the export walks, and they would exist nowhere else:
+        // Health Connect keeps thirty days of history, so a queued day
+        // that is older than that can never be read again.
+        val stillWaiting = queue.pendingDays()
+        if (stillWaiting.isEmpty()) {
+            applicationContext.dataStore.edit { it[LAST_SYNC_TIMESTAMP] = now }
+        } else {
+            Log.d(
+                "DataExporterWorker",
+                "The timestamp stays at the last sync, ${stillWaiting.size} " +
+                    "day(s) are still waiting for the server"
+            )
+        }
 
         notificationManager.cancel(1)
         return Result.success()
@@ -247,8 +285,14 @@ class DataExporterScheduleWorker(
     /**
      * Sends the queued payloads to the server.
      *
-     * A payload that the server accepts is removed from the queue. A
-     * payload that the server rejects stays in the queue, because the
+     * A payload that the server accepts becomes a marker. The marker says
+     * that the server holds this day, so the day is not read again from
+     * Health Connect, which would return nothing for a day that is older
+     * than its history of thirty days, and the server would write those
+     * empty values over the ones it already has. The payload itself is
+     * dropped, because the server holds it now.
+     *
+     * A payload that the server rejects stays in the queue, because the
      * server may not understand it yet, and a newer version of the app
      * may send it in a shape the server accepts.
      *
@@ -259,7 +303,7 @@ class DataExporterScheduleWorker(
      * sent. The caller sends the new days then.
      */
     private suspend fun flushQueue(queue: PayloadQueue, url: String): Result? {
-        val queued = queue.all()
+        val queued = queue.pending()
         if (queued.isEmpty()) {
             return null
         }
@@ -283,7 +327,7 @@ class DataExporterScheduleWorker(
                     return null
                 }
 
-                queue.remove(entry.day)
+                queue.markDelivered(entry.day)
                 Log.d("DataExporterWorker", "The queued payload of ${entry.day} was sent")
             } catch (e: Exception) {
                 Log.e("DataExporterWorker", "Failed to send the queued payload", e)

@@ -11,70 +11,71 @@ import android.util.Log
  * reach for days would lose the days it could not send. The queue keeps
  * them until the server accepts them.
  *
- * The queue is bounded. A server that is gone for a year would fill the
- * storage of the phone otherwise. The oldest entries are dropped, because
- * a day that is too old has lost most of its value anyway, and the newest
- * ones describe the present state of the health data.
+ * The queue is not bounded. A queued day is the only copy of that day:
+ * Health Connect keeps thirty days of history, so a day that is older
+ * than that exists nowhere else. Dropping it would lose the data of that
+ * day, and a few kilobytes of storage are a smaller problem than the loss.
  */
 class PayloadQueue(context: Context) {
     private val dao = PayloadQueueDatabase.get(context).payloadQueueDao()
 
     /**
-     * Puts a payload into the queue and drops the oldest entries when the
-     * queue is full.
+     * Puts a payload into the queue.
+     *
+     * The day is the key of the entry, so a day that is queued twice
+     * replaces its earlier entry. The later values are the ones that were
+     * read last, and they are the running total of the day.
      */
     suspend fun enqueue(day: String, payload: String, queuedAt: Long) {
         dao.upsert(QueuedPayload(day = day, payload = payload, queuedAt = queuedAt))
-        trim()
     }
 
     /**
-     * The queued payloads, the oldest day first.
+     * The payloads that the server did not accept yet, the oldest day
+     * first.
+     */
+    suspend fun pending(): List<QueuedPayload> = dao.pending()
+
+    /**
+     * Every entry of the queue, the oldest day first.
      */
     suspend fun all(): List<QueuedPayload> = dao.all()
 
     /**
-     * Removes a payload that the server accepted.
+     * Marks a day as accepted by the server.
+     *
+     * The entry stays as a marker, because it says that the day must not
+     * be read again. Only the payload is dropped, because the server holds
+     * it now.
+     */
+    suspend fun markDelivered(day: String) {
+        dao.markDelivered(day)
+    }
+
+    /**
+     * Removes an entry.
      */
     suspend fun remove(day: String) {
         dao.delete(day)
     }
 
     /**
-     * The number of queued payloads.
+     * The number of entries.
      */
     suspend fun size(): Int = dao.count()
 
     /**
-     * The days that are queued, the oldest day first.
+     * The days of the queue, the oldest day first.
      */
     suspend fun days(): List<String> = dao.days()
 
     /**
-     * Drops the oldest entries until the queue holds at most
-     * `MAX_ENTRIES`.
-     *
-     * The oldest entry is dropped first, because the newest entries
-     * describe the present state of the health data and the oldest ones
-     * have lost the most of their value.
+     * The days that are still waiting for the server.
      */
-    private suspend fun trim() {
-        val days = dao.days()
-        val dropped = QueuePolicy.daysToDrop(days)
-        dropped.forEach { day ->
-            dao.delete(day)
-        }
-        if (dropped.isNotEmpty()) {
-            Log.w(
-                "PayloadQueue",
-                "The queue was full, dropped ${dropped.size} of the oldest entries: " +
-                    dropped.joinToString(", "),
-            )
-        }
-    }
+    suspend fun pendingDays(): List<String> = dao.pendingDays()
 
-    companion object {
-        /** The number of payloads the queue holds. */
-        const val MAX_ENTRIES = QueuePolicy.MAX_ENTRIES
-    }
+    /**
+     * The days the server already holds.
+     */
+    suspend fun deliveredDays(): List<String> = dao.deliveredDays()
 }

@@ -25,33 +25,55 @@ interface PayloadQueueDao {
     suspend fun upsert(payload: QueuedPayload)
 
     /**
-     * The queued payloads, the oldest day first.
+     * The payloads that the server did not accept yet, the oldest day
+     * first.
+     */
+    @Query("SELECT * FROM queued_payloads WHERE delivered = 0 ORDER BY day ASC")
+    suspend fun pending(): List<QueuedPayload>
+
+    /**
+     * Every entry of the queue, the oldest day first. The delivered ones
+     * are the markers that say the server holds the day.
      */
     @Query("SELECT * FROM queued_payloads ORDER BY day ASC")
     suspend fun all(): List<QueuedPayload>
 
     /**
-     * Removes a payload that the server accepted.
+     * Turns an entry into a marker of a day the server accepted.
+     *
+     * The payload is dropped, because the server holds it now. The entry
+     * stays, because it says that the day must not be read again.
+     */
+    @Query("UPDATE queued_payloads SET delivered = 1, payload = '' WHERE day = :day")
+    suspend fun markDelivered(day: String)
+
+    /**
+     * Removes an entry.
      */
     @Query("DELETE FROM queued_payloads WHERE day = :day")
     suspend fun delete(day: String)
 
     /**
-     * The number of queued payloads.
+     * The number of entries.
      */
     @Query("SELECT COUNT(*) FROM queued_payloads")
     suspend fun count(): Int
 
     /**
-     * The days that are queued, the oldest day first.
+     * The days of the queue, the oldest day first.
      */
     @Query("SELECT day FROM queued_payloads ORDER BY day ASC")
     suspend fun days(): List<String>
 
     /**
-     * The oldest queued payloads, the ones that are dropped when the queue
-     * is full.
+     * The days that are still waiting for the server.
      */
-    @Query("SELECT * FROM queued_payloads ORDER BY day ASC LIMIT :limit")
-    suspend fun oldest(limit: Int): List<QueuedPayload>
+    @Query("SELECT day FROM queued_payloads WHERE delivered = 0 ORDER BY day ASC")
+    suspend fun pendingDays(): List<String>
+
+    /**
+     * The days the server already holds.
+     */
+    @Query("SELECT day FROM queued_payloads WHERE delivered = 1 ORDER BY day ASC")
+    suspend fun deliveredDays(): List<String>
 }

@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * The database that holds the payloads the server did not accept.
@@ -13,12 +15,27 @@ import androidx.room.RoomDatabase
  * for days would lose the days it could not send. The queue keeps them
  * until the server accepts them.
  */
-@Database(entities = [QueuedPayload::class], version = 1, exportSchema = false)
+@Database(entities = [QueuedPayload::class], version = 2, exportSchema = false)
 abstract class PayloadQueueDatabase : RoomDatabase() {
     abstract fun payloadQueueDao(): PayloadQueueDao
 
     companion object {
         private const val DATABASE_NAME = "payload_queue"
+
+        /**
+         * Adds the column that marks a day as accepted by the server.
+         *
+         * The existing rows are not delivered, because they are the days
+         * the server did not accept yet.
+         */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE queued_payloads " +
+                        "ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
 
         @Volatile
         private var instance: PayloadQueueDatabase? = null
@@ -34,7 +51,8 @@ abstract class PayloadQueueDatabase : RoomDatabase() {
                     context.applicationContext,
                     PayloadQueueDatabase::class.java,
                     DATABASE_NAME,
-                ).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2)
+                    .build().also { instance = it }
             }
         }
     }
