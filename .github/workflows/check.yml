@@ -16,7 +16,11 @@ on:
 jobs:
   check:
     name: Check App
-    runs-on: [self-hosted, Linux, X64]
+    # The self-hosted runner of the organisation cannot run this workflow.
+    # The runner group does not allow public repositories, and this
+    # repository is a public fork. The runner is also too small for the
+    # build of the app: it has no Java, no Gradle and no Android SDK.
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
