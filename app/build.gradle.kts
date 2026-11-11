@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.ksp)
 }
 
 // The release workflow exports the computed semantic version so the APK
@@ -118,6 +119,11 @@ dependencies {
     implementation(libs.androidx.material.icons.core)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.android)
+    // The offline queue keeps the payloads that the server did not accept,
+    // so a day is not lost when the server is unreachable.
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
