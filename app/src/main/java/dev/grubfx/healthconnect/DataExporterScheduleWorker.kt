@@ -17,6 +17,7 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.google.gson.Gson
+import dev.grubfx.healthconnect.queue.PayloadQueue
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import io.ktor.client.request.post
@@ -73,16 +74,42 @@ class DataExporterScheduleWorker(
             .setSmallIcon(R.drawable.ic_launcher_foreground).build()
     }
 
-    private suspend fun isHealthConnectPermissionGranted(healthConnect: HealthConnectClient): Boolean {
-        val grantedPermissions = healthConnect.permissionController.getGrantedPermissions()
-        val missingPermissions = readonlyHealthConnectPermissions.filter { it !in grantedPermissions }
-        
-        if (missingPermissions.isNotEmpty()) {
-            Log.d("DataExporterWorker", "Missing permissions: $missingPermissions")
-            // Temporarily allow missing permissions to proceed with available data
-            // return false 
+    /**
+     * Checks that every permission the export needs is granted.
+     *
+     * A missing permission is not a partial export but a wrong one. The
+     * aggregate call asks for every metric of every record type in one go,
+     * so a single missing read permission makes the whole call fail, and
+     * the day is silently missing from the database instead of being
+     * exported with fewer values. The background permission matters the
+     * same way: without it Health Connect reads nothing in the background,
+     * so the worker would export empty days.
+     *
+     * The export therefore stops when a permission is missing. The user
+     * grants it in the app, and the next run exports the days that were
+     * missed, because the worker walks the days since the last successful
+     * sync.
+     */
+    private suspend fun missingHealthConnectPermissions(
+        healthConnect: HealthConnectClient,
+    ): Set<String> {
+        val granted = healthConnect.permissionController.getGrantedPermissions()
+        val missing = readonlyHealthConnectPermissions.filter { it !in granted }.toSet()
+
+        // The background permission is only needed for the worker, because
+        // it runs while the app is not in the foreground. It is checked here
+        // and not in the list of the record types, because it is not a
+        // permission of a record type.
+        if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND !in granted) {
+            Log.d(
+                "DataExporterWorker",
+                "The permission to read in the background is not granted, " +
+                    "the export would return empty days."
+            )
+            return missing + HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
         }
-        return true // Proceed even if some are missing
+
+        return missing
     }
 
     override suspend fun doWork(): Result {
@@ -90,13 +117,28 @@ class DataExporterScheduleWorker(
         val notificationChannel = createNotificationChannel()
 
         Log.d("DataExporterWorker", "Checking exports prerequisites")
-        val isGranted = isHealthConnectPermissionGranted(healthConnect)
+        val missingPermissions = missingHealthConnectPermissions(healthConnect)
 
-        if (!isGranted) {
-            Log.d("DataExporterWorker", "Health Connect permissions not granted")
+        if (missingPermissions.isNotEmpty()) {
+            Log.d(
+                "DataExporterWorker",
+                "Health Connect permissions not granted, missing: $missingPermissions"
+            )
+            notificationManager.cancel(1)
+            notificationManager.notify(
+                1,
+                createExceptionNotification(
+                    IllegalStateException(
+                        "Health Connect permissions are missing: $missingPermissions"
+                    )
+                )
+            )
+            // The failure is not a retry. A retry runs the worker again with
+            // the same missing permission, and the user has to grant it in
+            // the app first.
             return Result.failure()
         }
-        Log.d("DataExporterWorker", "✅ Health Connect permissions granted")
+        Log.d("DataExporterWorker", "Health Connect permissions granted")
 
         val prefs = applicationContext.dataStore.data.first()
         val exportDestination = prefs[EXPORT_DESTINATION_URI]
@@ -139,6 +181,18 @@ class DataExporterScheduleWorker(
             "http://$exportDestination"
         }
 
+        val queue = PayloadQueue(applicationContext)
+
+        // The queued payloads go first. They are the days that the server
+        // did not accept, and they carry the values of the day they were
+        // built for. Sending them before the new days keeps the order of
+        // the dates, which matters because the server upserts the summary
+        // per date.
+        val flushResult = flushQueue(queue, url)
+        if (flushResult != null) {
+            return flushResult
+        }
+
         // Every day is sent as its own payload. The server upserts the
         // summary per date, so a day that is sent twice overwrites itself
         // instead of ending up twice in the database.
@@ -158,6 +212,10 @@ class DataExporterScheduleWorker(
                 // failure is reported and the sync timestamp is not advanced.
                 if (!response.status.isSuccess()) {
                     Log.e("DataExporterWorker", "Export rejected with ${response.status}")
+                    // The payload is kept, so the day is not lost when the
+                    // server comes back. A retry with the same payload would
+                    // fail in the same way, so the day waits for a later run.
+                    queue.enqueue(day.toString(), payload, now)
                     notificationManager.cancel(1)
                     notificationManager.notify(1, createExceptionNotification(
                         IllegalStateException("Server rejected the payload: ${response.status}")))
@@ -166,6 +224,11 @@ class DataExporterScheduleWorker(
             } catch (e: Exception) {
                 Log.e("DataExporterWorker", "Failed to export data", e)
 
+                // The payload is kept, so the day survives a server that is
+                // unreachable. Without the queue the day would be lost,
+                // because the sync timestamp is not advanced and the day
+                // would be read again, but with the values of a later day.
+                queue.enqueue(day.toString(), payload, now)
                 notificationManager.cancel(1)
                 notificationManager.notify(1, createExceptionNotification(e))
                 // A transport failure is worth another attempt. Returning retry()
@@ -179,6 +242,62 @@ class DataExporterScheduleWorker(
 
         notificationManager.cancel(1)
         return Result.success()
+    }
+
+    /**
+     * Sends the queued payloads to the server.
+     *
+     * A payload that the server accepts is removed from the queue. A
+     * payload that the server rejects stays in the queue, because the
+     * server may not understand it yet, and a newer version of the app
+     * may send it in a shape the server accepts.
+     *
+     * A transport failure stops the flush and returns a retry. The entries
+     * stay in the queue, so nothing is lost.
+     *
+     * The result is null when the queue is empty or when every entry was
+     * sent. The caller sends the new days then.
+     */
+    private suspend fun flushQueue(queue: PayloadQueue, url: String): Result? {
+        val queued = queue.all()
+        if (queued.isEmpty()) {
+            return null
+        }
+
+        Log.d("DataExporterWorker", "Sending ${queued.size} queued payload(s)")
+        for (entry in queued) {
+            try {
+                val response = httpClient.post(url) {
+                    contentType(ContentType.Application.Json)
+                    setBody(entry.payload)
+                }
+
+                if (!response.status.isSuccess()) {
+                    Log.e(
+                        "DataExporterWorker",
+                        "The queued payload of ${entry.day} was rejected with " +
+                            "${response.status}"
+                    )
+                    // The entry stays in the queue. The server may not
+                    // understand the payload yet.
+                    return null
+                }
+
+                queue.remove(entry.day)
+                Log.d("DataExporterWorker", "The queued payload of ${entry.day} was sent")
+            } catch (e: Exception) {
+                Log.e("DataExporterWorker", "Failed to send the queued payload", e)
+
+                notificationManager.cancel(1)
+                notificationManager.notify(1, createExceptionNotification(e))
+                // The transport is the problem, not the payload. The
+                // entries stay in the queue and the run is worth another
+                // attempt.
+                return Result.retry()
+            }
+        }
+
+        return null
     }
 
     /**
