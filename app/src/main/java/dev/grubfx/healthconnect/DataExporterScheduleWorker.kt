@@ -198,12 +198,60 @@ class DataExporterScheduleWorker(
         val pendingDays = queue.pendingDays().toSet()
         val deliveredDays = queue.deliveredDays().toSet()
         val today = days.lastOrNull()?.toString()
-        val daysToRead = QueuePolicy.daysToExport(
-            days.map { it.toString() },
-            pendingDays,
-            deliveredDays,
-            today ?: "",
-        ).map { LocalDate.parse(it) }
+
+        // The changes of Health Connect say which records were added or
+        // changed since the last run. They cost one call for all the types,
+        // instead of one call per type and per day.
+        //
+        // The changes are not available on the first run, and they are not
+        // available when the token expired. Then the days are read the old
+        // way, one call per type, which is more expensive but complete.
+        val changesReader = ChangesReader(applicationContext)
+        val storedToken = changesReader.storedToken()
+        val changes = if (storedToken != null) {
+            changesReader.readChanges(storedToken)
+        } else {
+            null
+        }
+
+        // A new token is reserved before the export and stored after it. It
+        // marks the point in time up to which the export covers, so the
+        // records that are written after it show up in the next changes.
+        val newToken = if (storedToken == null || changes == null) {
+            try {
+                changesReader.reserveToken()
+            } catch (e: Exception) {
+                // Without a token the next run reads the days the old way,
+                // which is more expensive but complete.
+                Log.e("DataExporterWorker", "Failed to reserve a token", e)
+                null
+            }
+        } else {
+            null
+        }
+
+        val daysToRead = if (changes != null) {
+            // The days the changes touch are read, plus the days the server
+            // does not hold yet, plus the current day and the day before
+            // it. The last two are always read, because their totals are a
+            // running total that grows during the day.
+            ChangesPolicy.daysToExport(
+                days.map { it.toString() },
+                changes.days,
+                pendingDays,
+                deliveredDays,
+                today ?: "",
+                today?.let { LocalDate.parse(it).minusDays(1).toString() },
+            ).map { LocalDate.parse(it) }
+        } else {
+            QueuePolicy.daysToExport(
+                days.map { it.toString() },
+                pendingDays,
+                deliveredDays,
+                today ?: "",
+            ).map { LocalDate.parse(it) }
+        }
+
         if (daysToRead.isEmpty()) {
             Log.d(
                 "DataExporterWorker",
@@ -221,7 +269,20 @@ class DataExporterScheduleWorker(
         // summary per date, so a day that is sent twice overwrites itself
         // instead of ending up twice in the database.
         for (day in daysToRead) {
-            val payload = buildPayload(day, now)
+            // Where the raw records of this day come from. A day the server
+            // holds already comes from the changes, a day the server does
+            // not hold yet is read from Health Connect.
+            val rawSource = if (changes != null) {
+                ChangesPolicy.rawSource(
+                    day.toString(),
+                    changes.days,
+                    deliveredDays,
+                )
+            } else {
+                ChangesPolicy.RawSource.READ
+            }
+
+            val payload = buildPayload(day, now, changes, rawSource)
             Log.d("DataExporterWorker", "Data for $day: $payload")
 
             try {
@@ -270,6 +331,19 @@ class DataExporterScheduleWorker(
         val stillWaiting = queue.pendingDays()
         if (stillWaiting.isEmpty()) {
             applicationContext.dataStore.edit { it[LAST_SYNC_TIMESTAMP] = now }
+
+            // The token is stored now, because everything up to it is at the
+            // server. The token of the changes is not the token of the
+            // export: it marks the point in time up to which the changes
+            // were read, so the records that are written after it show up
+            // in the next run.
+            if (newToken != null) {
+                changesReader.storeToken(newToken)
+                Log.d("DataExporterWorker", "The token of the changes was stored")
+            } else if (changes != null) {
+                changesReader.storeToken(changes.nextToken)
+                Log.d("DataExporterWorker", "The token of the changes was advanced")
+            }
         } else {
             Log.d(
                 "DataExporterWorker",
@@ -384,12 +458,25 @@ class DataExporterScheduleWorker(
      * one call for all metrics is the only way to stay inside the quota
      * while the worker walks the days of the history.
      *
-     * The record types that Health Connect cannot aggregate are read as raw
-     * records. They are one call per type, because the API reads a single
-     * type per call. A type that has no record in the day is not read at
-     * all, which keeps the number of calls low.
+     * The record types that Health Connect cannot aggregate come from the
+     * changes, when the day is at the server already. That is one call for
+     * all of them instead of one call per type.
+     *
+     * A day the server does not hold yet is read the old way, one call per
+     * type. The changes only carry the records that were written after the
+     * token, and the records of that day that were written before the token
+     * would be lost.
+     *
+     * @param changes the changes since the last run, or null when they are
+     *   not available and the records have to be read the old way.
+     * @param rawSource where the raw records of this day come from.
      */
-    private suspend fun buildPayload(day: LocalDate, now: Long): String {
+    private suspend fun buildPayload(
+        day: LocalDate,
+        now: Long,
+        changes: ChangedRecords?,
+        rawSource: ChangesPolicy.RawSource,
+    ): String {
         val zone = ZoneId.systemDefault()
         val startOfDay = day.atStartOfDay(zone).toInstant().toEpochMilli()
         // The end of the day is exclusive, so the records at midnight belong
@@ -447,7 +534,11 @@ class DataExporterScheduleWorker(
         // The record types without an aggregate are read as raw records. Each
         // of them becomes an entry of its own, so a day with several
         // measurements keeps all of them.
-        val rawMetrics = readRawMetrics(day, timeRangeFilter)
+        val rawMetrics = when (rawSource) {
+            ChangesPolicy.RawSource.CHANGES -> changedRawMetrics(day, changes)
+            ChangesPolicy.RawSource.READ -> readRawMetrics(day, timeRangeFilter)
+            ChangesPolicy.RawSource.NONE -> emptyList()
+        }
         Log.d("DataExporterWorker", "Raw metrics: ${Gson().toJson(rawMetrics)}")
 
         // The daily summary keeps the totals the server writes to its own
@@ -493,6 +584,10 @@ class DataExporterScheduleWorker(
      * token while there are more records, and the token is empty string
      * instead of null on some versions of Health Connect, so it is checked
      * with isNullOrEmpty.
+     *
+     * This is the way that spends a call per type. The changes of Health
+     * Connect cost one call for all of them, so this is only used when the
+     * changes are not available.
      */
     @Suppress("UNCHECKED_CAST")
     private suspend fun readRawMetrics(
@@ -561,6 +656,64 @@ class DataExporterScheduleWorker(
     }
 
     /**
+     * Builds the entries of the record types that Health Connect cannot
+     * aggregate, out of the changes.
+     *
+     * The changes hold the records that were added or changed since the
+     * last call, for every type at once. That is one call for all the types
+     * instead of one call per type.
+     *
+     * Only the records of the day that is built are used. A change of a
+     * record of another day belongs to that day, and that day is built on
+     * its own.
+     */
+    private fun changedRawMetrics(
+        day: LocalDate,
+        changes: ChangedRecords?,
+    ): List<Map<String, Any>> {
+        if (changes == null) {
+            // Without changes the records are read the old way, one call per
+            // type.
+            return emptyList()
+        }
+
+        val records = changes.byDay[day.toString()].orEmpty()
+        val entries = mutableListOf<Map<String, Any>>()
+
+        for (record in records) {
+            val spec = rawRecordSpecs.firstOrNull { spec ->
+                spec.recordClass.isInstance(record)
+            } ?: continue
+
+            val values = spec.fields
+                .mapNotNull { field ->
+                    val value = field.read(fieldValue(record, field))
+                    if (value == 0.0) null else field.name to value
+                }
+                .toMap()
+
+            if (values.isNotEmpty()) {
+                val time = recordTime(record)
+                entries.add(
+                    mapOf(
+                        "metric" to spec.type,
+                        "record_id" to recordId(spec.type, record, time),
+                        "time" to time,
+                        "values" to values,
+                    ),
+                )
+            }
+        }
+
+        Log.d(
+            "DataExporterWorker",
+            "The changes hold ${entries.size} record(s) of $day",
+        )
+
+        return entries
+    }
+
+    /**
      * Reads the value of a field out of a record.
      *
      * The registry names the fields of a type, but the records are read as
@@ -580,24 +733,4 @@ class DataExporterScheduleWorker(
      * the concrete type. A record without a time falls back to the start of
      * the day, so the entry still has a position in the series.
      */
-    private fun recordTime(record: Record): Long {
-        val time = record.javaClass.methods
-            .firstOrNull { it.name == "getTime" }
-            ?.invoke(record) as? Instant
-        return time?.toEpochMilli() ?: 0L
-    }
-
-    /**
-     * Builds the identity of a record for the server.
-     *
-     * Health Connect assigns a unique id to every record when it is written.
-     * That id survives a reinstall of the writing app and is stable for the
-     * lifetime of the record, so it is used as the identity. A record without
-     * an id falls back to the time of the record, which is unique as long as
-     * the type holds no two records with the same time.
-     */
-    private fun recordId(type: String, record: Record, time: Long): String {
-        val id = record.metadata.id
-        return if (id.isNotEmpty()) "$type-$id" else "$type-$time"
-    }
 }
