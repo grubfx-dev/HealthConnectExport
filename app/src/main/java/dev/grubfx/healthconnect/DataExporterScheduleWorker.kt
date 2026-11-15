@@ -33,6 +33,7 @@ import androidx.datastore.preferences.core.edit
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 
 val httpClient = HttpClient(Android)
 
@@ -492,6 +493,15 @@ class DataExporterScheduleWorker(
         // future to read.
         val end = minOf(endOfDay, now)
 
+        // The timestamp of the point that holds the totals of the day. It is
+        // the midnight of the day in UTC, because the server writes the daily
+        // summary at that moment. The point of a day is identified by its
+        // measurement, its tags and its timestamp, so the aggregated values
+        // of the day have to use the same timestamp. With the local midnight
+        // they would be a second point of the same day, and the values of
+        // the day would be spread over two points.
+        val timestampOfDay = day.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
         val timeRangeFilter = TimeRangeFilter.Companion.between(
             Instant.ofEpochMilli(startOfDay),
             Instant.ofEpochMilli(end)
@@ -530,7 +540,7 @@ class DataExporterScheduleWorker(
                 mapOf(
                     "metric" to spec.type,
                     "record_id" to day.toString(),
-                    "time" to startOfDay,
+                    "time" to timestampOfDay,
                     "values" to values,
                 )
             }
