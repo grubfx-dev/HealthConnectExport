@@ -306,6 +306,12 @@ class DataExporterScheduleWorker(
                         IllegalStateException("Server rejected the payload: ${response.status}")))
                     return Result.failure()
                 }
+
+                // The server holds the day now, so the day is marked. The
+                // marker is what says that the records of that day can come
+                // from the changes of Health Connect, instead of being read
+                // again with one call per type.
+                queue.markDeliveredIfAbsent(day.toString(), now)
             } catch (e: Exception) {
                 Log.e("DataExporterWorker", "Failed to export data", e)
 

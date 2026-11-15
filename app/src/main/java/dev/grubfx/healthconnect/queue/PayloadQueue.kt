@@ -53,6 +53,18 @@ class PayloadQueue(context: Context) {
     }
 
     /**
+     * Marks a day as accepted by the server, even if it was never queued.
+     *
+     * A day that the worker sends right away never sits in the queue, so
+     * there is no entry that could be turned into a marker. The marker is
+     * written here, because a day the server holds must not be read again.
+     */
+    suspend fun markDeliveredIfAbsent(day: String, queuedAt: Long) {
+        dao.insertMarker(QueuedPayload(day = day, payload = "", queuedAt = queuedAt))
+        dao.markDelivered(day)
+    }
+
+    /**
      * Removes an entry.
      */
     suspend fun remove(day: String) {

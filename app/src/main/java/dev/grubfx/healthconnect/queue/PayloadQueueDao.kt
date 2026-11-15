@@ -48,6 +48,18 @@ interface PayloadQueueDao {
     suspend fun markDelivered(day: String)
 
     /**
+     * Marks a day the server accepted, even if there is no entry for it.
+     *
+     * A day that the worker sends right away never sat in the queue, so
+     * there is no entry that the update could change. The marker is the
+     * entry, and the entry is the marker, so it is written here.
+     *
+     * The entry carries no payload, because the payload is in the server.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertMarker(marker: QueuedPayload)
+
+    /**
      * Removes an entry.
      */
     @Query("DELETE FROM queued_payloads WHERE day = :day")
