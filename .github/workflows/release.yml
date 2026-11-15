@@ -7,6 +7,14 @@ on:
       - development
   workflow_dispatch:
 
+# Only one release at a time. Two pushes in quick succession would
+# otherwise release the same version twice, because the version comes
+# from the commits and both jobs would compute the same number. The
+# newer push cancels the older run.
+concurrency:
+  group: android-release
+  cancel-in-progress: true
+
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
