@@ -71,6 +71,12 @@ jobs:
         with:
           name: app-release-${{ steps.version.outputs.version_tag }}
           path: app/build/outputs/apk/release/app-release.apk
+          # The APK is attached to the GitHub release below, so the
+          # artefact is only a way to carry it from one step to the next.
+          # It is eleven megabytes, and the storage of the organisation is
+          # shared with every other repository of it, so it does not stay
+          # for the ninety days of the default.
+          retention-days: 7
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
