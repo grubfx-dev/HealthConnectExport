@@ -66,17 +66,12 @@ jobs:
           HECEXP_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: ./gradlew --no-daemon assembleRelease
 
-      - name: Upload APK as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-${{ steps.version.outputs.version_tag }}
-          path: app/build/outputs/apk/release/app-release.apk
-          # The APK is attached to the GitHub release below, so the
-          # artefact is only a way to carry it from one step to the next.
-          # It is eleven megabytes, and the storage of the organisation is
-          # shared with every other repository of it, so it does not stay
-          # for the ninety days of the default.
-          retention-days: 7
+      # The APK is attached to the GitHub release below. It was carried
+      # from the step that builds it to the step that publishes it as an
+      # artefact before, but the two steps run on the same machine, so the
+      # file is there anyway. The upload was a second copy of the same
+      # file, and the storage of the organisation is shared with every
+      # other repository of it. The APK is eleven megabytes.
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
